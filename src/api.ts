@@ -254,7 +254,20 @@ export class EcoFlowAPI {
       nonce: nonce.toString(),
     };
     
+    // Log the original endpoint
+    console.log(`Original endpoint: ${endpoint}`);
+    
+    // Ensure endpoint starts with /iot-open if it's a partial path
+    let originalEndpoint = endpoint;
+    if (endpoint.startsWith("/sign/")) {
+      console.log(`Warning: Endpoint path ${endpoint} appears to be truncated. Fixing by prepending /iot-open`);
+      endpoint = `/iot-open${endpoint}`;
+      console.log(`Modified endpoint: ${endpoint}`);
+    }
+    
     let url = `${BASE_URL}${endpoint}`;
+    console.log(`Full URL: ${url}`);
+    
     let requestData: any = undefined;
     
     // Handle different request methods according to the documentation
@@ -266,6 +279,7 @@ export class EcoFlowAPI {
           queryParams.append(key, String(params[key]));
         }
         url += `?${queryParams.toString()}`;
+        console.log(`GET URL with params: ${url}`);
       }
       
       // For GET requests, the signature is based on the original params
@@ -300,6 +314,15 @@ export class EcoFlowAPI {
       if (requestData) {
         console.log(`Request body:`, JSON.stringify(requestData, null, 2));
       }
+      
+      // Log the exact request configuration
+      console.log(`Axios request config:`, JSON.stringify({
+        method,
+        url,
+        headers: { ...headers },
+        data: requestData ? { ...requestData } : undefined,
+        timeout: 10000
+      }, null, 2));
       
       const response = await axios({
         method,
@@ -649,6 +672,10 @@ export class EcoFlowAPI {
       
       console.log("Smart Plug command request:", JSON.stringify(requestBody, null, 2));
       
+      // Log the full URL and method
+      console.log(`Making PUT request to: ${BASE_URL}/iot-open/sign/device/cmd`);
+      
+      // Ensure we're using the full path "/iot-open/sign/device/cmd"
       const response = await this.makeSignedRequest<any>(
         "PUT",
         "/iot-open/sign/device/cmd",
@@ -665,6 +692,7 @@ export class EcoFlowAPI {
           data: response.data
         };
       } else {
+        console.error(`API Error (Code: ${response.code}):`, response.message || "Unknown error");
         return {
           success: false,
           message: `API Error: ${response.message || "Unknown error"} (Code: ${response.code})`,
@@ -673,6 +701,22 @@ export class EcoFlowAPI {
       }
     } catch (error) {
       console.error(`Error setting Smart Plug function:`, error);
+      
+      // More detailed error logging
+      if (axios.isAxiosError(error) && error.response) {
+        console.error(`API Error (${error.response.status}):`, error.response.data);
+        
+        // For 404 Not Found errors, provide more helpful information
+        if (error.response.status === 404) {
+          console.error(`Not Found: The API endpoint /iot-open/sign/device/cmd was not found`);
+          console.error(`This might indicate that the API endpoint has changed or is incorrect.`);
+          console.error(`According to the SmartPlug.md documentation, we should use PUT /iot-open/sign/device/cmd`);
+          
+          // Log the full URL that was attempted
+          console.error(`Full URL attempted: ${BASE_URL}/iot-open/sign/device/cmd`);
+        }
+      }
+      
       return {
         success: false,
         message: error instanceof Error ? error.message : "Unknown error",
@@ -991,47 +1035,154 @@ export class EcoFlowAPI {
     try {
       console.log(`Toggling AC output for ${deviceType} (${serialNumber}) to ${newState}`);
       
-      // Determine the correct format based on device type
-      let params: Record<string, any> = {};
-      
-      // Different device types use different parameter formats
+      // Different device types use different approaches
       if (deviceType.includes("DELTA PRO ULTRA")) {
-        params["hs_yj751_inv_cfg_addr.cfgAcEnabled"] = newState;
+        // For Delta Pro Ultra, we need to use the command-based approach
+        console.log("Using Delta Pro Ultra command-based approach for AC toggle");
+        
+        // According to DeltaProUltra.md, we need to use YJ751_PD_AC_DSG_SET command
+        const requestBody = {
+          sn: serialNumber,
+          cmdCode: "YJ751_PD_AC_DSG_SET",
+          params: {
+            enable: newState,
+            // Keep existing X-boost and frequency settings
+            xboost: 1,  // Default to enabled
+            outFreq: 50 // Default to 50Hz
+          }
+        };
+        
+        console.log("AC toggle request:", JSON.stringify(requestBody, null, 2));
+        
+        const response = await this.makeSignedRequest<any>(
+          "PUT",
+          "/iot-open/sign/device/cmd",
+          requestBody,
+          "application/json;charset=UTF-8"
+        );
+        
+        console.log("AC toggle response:", JSON.stringify(response, null, 2));
+        
+        if (response && response.code === "0") {
+          return {
+            success: true,
+            message: `AC output set to ${newState ? "on" : "off"}`,
+            data: response.data
+          };
+        } else {
+          return {
+            success: false,
+            message: `API Error: ${response.message || "Unknown error"} (Code: ${response.code})`,
+            error: response
+          };
+        }
       } else if (deviceType.includes("DELTA PRO 3")) {
-        // For Delta Pro 3, we need to find the correct prefix
-        params["9_1.cfgAcEnabled"] = newState;
-      } else if (deviceType.includes("DELTA 2 MAX")) {
-        params["inv.cfgAcEnabled"] = newState;
-      } else {
-        // Default format for most Delta models
-        params["inv.cfgAcEnabled"] = newState;
-      }
-      
-      // Use our makeSignedRequest method instead of direct axios call
-      const requestBody = {
-        sn: serialNumber,
-        params
-      };
-      
-      const response = await this.makeSignedRequest<any>(
-        "PUT",
-        "/iot-open/sign/device/quota",
-        requestBody,
-        "application/json;charset=UTF-8"
-      );
-      
-      if (response && response.code === "0") {
-        return {
-          success: true,
-          message: `AC output set to ${newState ? "on" : "off"}`,
-          data: response.data
+        // For Delta Pro 3, we need to use the specific format with prefix 9_1
+        console.log("Using Delta Pro 3 specific format for AC toggle");
+        
+        const params = {
+          "9_1.cfgAcEnabled": newState
         };
-      } else {
-        return {
-          success: false,
-          message: `API Error: ${response.message || "Unknown error"} (Code: ${response.code})`,
-          error: response
+        
+        const requestBody = {
+          sn: serialNumber,
+          params
         };
+        
+        console.log("AC toggle request:", JSON.stringify(requestBody, null, 2));
+        
+        const response = await this.makeSignedRequest<any>(
+          "PUT",
+          "/iot-open/sign/device/quota",
+          requestBody,
+          "application/json;charset=UTF-8"
+        );
+        
+        console.log("AC toggle response:", JSON.stringify(response, null, 2));
+        
+        if (response && response.code === "0") {
+          return {
+            success: true,
+            message: `AC output set to ${newState ? "on" : "off"}`,
+            data: response.data
+          };
+        } else {
+          return {
+            success: false,
+            message: `API Error: ${response.message || "Unknown error"} (Code: ${response.code})`,
+            error: response
+          };
+        }
+      } else {
+        // For Delta 2 Max and other models, use the format from DeltaPro.md
+        console.log("Using standard Delta format for AC toggle");
+        
+        // According to DeltaPro.md, we should use the cmdSet/id approach
+        const requestBody = {
+          sn: serialNumber,
+          params: {
+            cmdSet: 32,
+            id: 66,
+            enabled: newState
+          }
+        };
+        
+        console.log("AC toggle request:", JSON.stringify(requestBody, null, 2));
+        
+        const response = await this.makeSignedRequest<any>(
+          "PUT",
+          "/iot-open/sign/device/quota",
+          requestBody,
+          "application/json;charset=UTF-8"
+        );
+        
+        console.log("AC toggle response:", JSON.stringify(response, null, 2));
+        
+        if (response && response.code === "0") {
+          return {
+            success: true,
+            message: `AC output set to ${newState ? "on" : "off"}`,
+            data: response.data
+          };
+        } else {
+          // If the cmdSet/id approach fails, try the direct property approach as fallback
+          console.log("First approach failed, trying direct property approach as fallback");
+          
+          const fallbackRequestBody = {
+            sn: serialNumber,
+            params: {
+              "inv.cfgAcEnabled": newState
+            }
+          };
+          
+          console.log("AC toggle fallback request:", JSON.stringify(fallbackRequestBody, null, 2));
+          
+          const fallbackResponse = await this.makeSignedRequest<any>(
+            "PUT",
+            "/iot-open/sign/device/quota",
+            fallbackRequestBody,
+            "application/json;charset=UTF-8"
+          );
+          
+          console.log("AC toggle fallback response:", JSON.stringify(fallbackResponse, null, 2));
+          
+          if (fallbackResponse && fallbackResponse.code === "0") {
+            return {
+              success: true,
+              message: `AC output set to ${newState ? "on" : "off"} (fallback method)`,
+              data: fallbackResponse.data
+            };
+          } else {
+            return {
+              success: false,
+              message: `API Error: Both methods failed to toggle AC output`,
+              error: {
+                primaryError: response,
+                fallbackError: fallbackResponse
+              }
+            };
+          }
+        }
       }
     } catch (error) {
       console.error(`Error toggling AC output:`, error);
@@ -1054,47 +1205,152 @@ export class EcoFlowAPI {
     try {
       console.log(`Toggling DC output for ${deviceType} (${serialNumber}) to ${newState}`);
       
-      // Determine the correct format based on device type
-      let params: Record<string, any> = {};
-      
-      // Different device types use different parameter formats
+      // Different device types use different approaches
       if (deviceType.includes("DELTA PRO ULTRA")) {
-        params["hs_yj751_pd_cfg_addr.cfgDcEnabled"] = newState;
+        // For Delta Pro Ultra, we need to use the command-based approach
+        console.log("Using Delta Pro Ultra command-based approach for DC toggle");
+        
+        // According to DeltaProUltra.md, we need to use YJ751_PD_DC_SWITCH_SET command
+        const requestBody = {
+          sn: serialNumber,
+          cmdCode: "YJ751_PD_DC_SWITCH_SET",
+          params: {
+            enable: newState
+          }
+        };
+        
+        console.log("DC toggle request:", JSON.stringify(requestBody, null, 2));
+        
+        const response = await this.makeSignedRequest<any>(
+          "PUT",
+          "/iot-open/sign/device/cmd",
+          requestBody,
+          "application/json;charset=UTF-8"
+        );
+        
+        console.log("DC toggle response:", JSON.stringify(response, null, 2));
+        
+        if (response && response.code === "0") {
+          return {
+            success: true,
+            message: `DC output set to ${newState ? "on" : "off"}`,
+            data: response.data
+          };
+        } else {
+          return {
+            success: false,
+            message: `API Error: ${response.message || "Unknown error"} (Code: ${response.code})`,
+            error: response
+          };
+        }
       } else if (deviceType.includes("DELTA PRO 3")) {
-        // For Delta Pro 3, we need to find the correct prefix
-        params["9_1.cfgDcEnabled"] = newState;
-      } else if (deviceType.includes("DELTA 2 MAX")) {
-        params["pd.dcOutState"] = newState;
-      } else {
-        // Default format for most Delta models
-        params["pd.dcOutState"] = newState;
-      }
-      
-      // Use our makeSignedRequest method instead of direct axios call
-      const requestBody = {
-        sn: serialNumber,
-        params
-      };
-      
-      const response = await this.makeSignedRequest<any>(
-        "PUT",
-        "/iot-open/sign/device/quota",
-        requestBody,
-        "application/json;charset=UTF-8"
-      );
-      
-      if (response && response.code === "0") {
-        return {
-          success: true,
-          message: `DC output set to ${newState ? "on" : "off"}`,
-          data: response.data
+        // For Delta Pro 3, we need to use the specific format with prefix 9_1
+        console.log("Using Delta Pro 3 specific format for DC toggle");
+        
+        const params = {
+          "9_1.cfgDcEnabled": newState
         };
-      } else {
-        return {
-          success: false,
-          message: `API Error: ${response.message || "Unknown error"} (Code: ${response.code})`,
-          error: response
+        
+        const requestBody = {
+          sn: serialNumber,
+          params
         };
+        
+        console.log("DC toggle request:", JSON.stringify(requestBody, null, 2));
+        
+        const response = await this.makeSignedRequest<any>(
+          "PUT",
+          "/iot-open/sign/device/quota",
+          requestBody,
+          "application/json;charset=UTF-8"
+        );
+        
+        console.log("DC toggle response:", JSON.stringify(response, null, 2));
+        
+        if (response && response.code === "0") {
+          return {
+            success: true,
+            message: `DC output set to ${newState ? "on" : "off"}`,
+            data: response.data
+          };
+        } else {
+          return {
+            success: false,
+            message: `API Error: ${response.message || "Unknown error"} (Code: ${response.code})`,
+            error: response
+          };
+        }
+      } else {
+        // For Delta 2 Max and other models, use the format from DeltaPro.md
+        console.log("Using standard Delta format for DC toggle");
+        
+        // According to DeltaPro.md, we should use the direct property approach
+        const requestBody = {
+          sn: serialNumber,
+          params: {
+            "pd.dcOutState": newState
+          }
+        };
+        
+        console.log("DC toggle request:", JSON.stringify(requestBody, null, 2));
+        
+        const response = await this.makeSignedRequest<any>(
+          "PUT",
+          "/iot-open/sign/device/quota",
+          requestBody,
+          "application/json;charset=UTF-8"
+        );
+        
+        console.log("DC toggle response:", JSON.stringify(response, null, 2));
+        
+        if (response && response.code === "0") {
+          return {
+            success: true,
+            message: `DC output set to ${newState ? "on" : "off"}`,
+            data: response.data
+          };
+        } else {
+          // If the direct property approach fails, try an alternative approach
+          console.log("First approach failed, trying alternative approach");
+          
+          // Try using cmdSet/id approach as fallback
+          const fallbackRequestBody = {
+            sn: serialNumber,
+            params: {
+              cmdSet: 32,
+              id: 81,
+              enabled: newState
+            }
+          };
+          
+          console.log("DC toggle fallback request:", JSON.stringify(fallbackRequestBody, null, 2));
+          
+          const fallbackResponse = await this.makeSignedRequest<any>(
+            "PUT",
+            "/iot-open/sign/device/quota",
+            fallbackRequestBody,
+            "application/json;charset=UTF-8"
+          );
+          
+          console.log("DC toggle fallback response:", JSON.stringify(fallbackResponse, null, 2));
+          
+          if (fallbackResponse && fallbackResponse.code === "0") {
+            return {
+              success: true,
+              message: `DC output set to ${newState ? "on" : "off"} (fallback method)`,
+              data: fallbackResponse.data
+            };
+          } else {
+            return {
+              success: false,
+              message: `API Error: Both methods failed to toggle DC output`,
+              error: {
+                primaryError: response,
+                fallbackError: fallbackResponse
+              }
+            };
+          }
+        }
       }
     } catch (error) {
       console.error(`Error toggling DC output:`, error);
@@ -1116,84 +1372,371 @@ export class EcoFlowAPI {
     try {
       console.log(`Fetching Delta quotas for device: ${serialNumber} (${deviceType})`);
       
-      // Different Delta models may use different quota prefixes
-      let prefix = "";
+      // First try to get all quotas using the getAllQuotas method
+      // This is the most reliable method for most Delta models
+      try {
+        console.log("Attempting to fetch all quotas first...");
+        const allQuotas = await this.getAllQuotas(serialNumber);
+        
+        if (!allQuotas.error && Object.keys(allQuotas).length > 0) {
+          console.log("Successfully fetched all quotas");
+          
+          // Process the response to map to a consistent format
+          const processedData: Record<string, any> = { ...allQuotas };
+          
+          // Map the fields from the new format to our expected format
+          // Battery information
+          if (processedData.bmsBattSoc !== undefined) {
+            processedData.soc = Number(processedData.bmsBattSoc);
+          } else if (processedData.cmsBattSoc !== undefined) {
+            processedData.soc = Number(processedData.cmsBattSoc);
+          }
+          
+          // Power information
+          if (processedData.powInSumW !== undefined) {
+            processedData.wattsInSum = Number(processedData.powInSumW);
+          }
+          
+          if (processedData.powOutSumW !== undefined) {
+            processedData.wattsOutSum = Number(processedData.powOutSumW);
+          }
+          
+          // Remaining time
+          if (processedData.bmsChgRemTime !== undefined) {
+            processedData.remainTime = Number(processedData.bmsChgRemTime);
+          } else if (processedData.bmsDsgRemTime !== undefined) {
+            processedData.remainTime = -Number(processedData.bmsDsgRemTime); // Negative for discharge time
+          } else if (processedData.cmsChgRemTime !== undefined) {
+            processedData.remainTime = Number(processedData.cmsChgRemTime);
+          } else if (processedData.cmsDsgRemTime !== undefined) {
+            processedData.remainTime = -Number(processedData.cmsDsgRemTime); // Negative for discharge time
+          }
+          
+          // AC and DC status
+          if (processedData.xboostEn !== undefined) {
+            processedData.cfgAcXboost = processedData.xboostEn ? 1 : 0;
+          }
+          
+          if (processedData.acOutFreq !== undefined) {
+            processedData.acFreq = Number(processedData.acOutFreq);
+          }
+          
+          // Error codes
+          if (processedData.bmsErrCode !== undefined) {
+            processedData.errCode = Number(processedData.bmsErrCode);
+          }
+          
+          if (processedData.mpptErrCode !== undefined) {
+            processedData.mpptFaultCode = Number(processedData.mpptErrCode);
+          }
+          
+          // Battery capacity
+          if (processedData.bmsDesignCap !== undefined) {
+            processedData.designCap = Number(processedData.bmsDesignCap);
+          }
+          
+          if (processedData.cmsBattFullEnergy !== undefined) {
+            processedData.fullCap = Number(processedData.cmsBattFullEnergy);
+          }
+          
+          // Battery health
+          if (processedData.bmsBattSoh !== undefined) {
+            processedData.soh = Number(processedData.bmsBattSoh);
+          } else if (processedData.cmsBattSoh !== undefined) {
+            processedData.soh = Number(processedData.cmsBattSoh);
+          }
+          
+          // Temperature
+          if (processedData.bmsMaxCellTemp !== undefined) {
+            processedData.maxCellTemp = Number(processedData.bmsMaxCellTemp);
+          }
+          
+          if (processedData.bmsMinCellTemp !== undefined) {
+            processedData.minCellTemp = Number(processedData.bmsMinCellTemp);
+          }
+          
+          // AC and DC output state
+          // For AC, check if any AC output power is present
+          const acOutputs = [
+            processedData.powGetAc,
+            processedData.powGetAcHvOut,
+            processedData.powGetAcLvOut,
+            processedData.powGetAcLvTt30Out
+          ];
+          
+          if (acOutputs.some(power => power !== undefined && Number(power) > 0)) {
+            processedData.acOutState = 1;
+          } else {
+            processedData.acOutState = 0;
+          }
+          
+          // For DC, check if any DC output power is present
+          const dcOutputs = [
+            processedData.powGet12v,
+            processedData.powGet24v,
+            processedData.powGetTypec1,
+            processedData.powGetTypec2,
+            processedData.powGetQcusb1,
+            processedData.powGetQcusb2
+          ];
+          
+          if (dcOutputs.some(power => power !== undefined && Number(power) > 0)) {
+            processedData.dcOutState = 1;
+          } else {
+            processedData.dcOutState = 0;
+          }
+          
+          // Add additional useful information
+          processedData.maxChargeSoc = processedData.cmsMaxChgSoc;
+          processedData.minDsgSoc = processedData.cmsMinDsgSoc;
+          processedData.acStandbyMin = processedData.acStandbyTime;
+          processedData.dcStandbyMin = processedData.dcStandbyTime;
+          processedData.lcdOffSec = processedData.screenOffTime;
+          processedData.beepState = processedData.enBeep ? 1 : 0;
+          
+          return processedData;
+        } else {
+          console.log("Failed to fetch all quotas or received empty response, trying specific quotas...");
+        }
+      } catch (allQuotasError) {
+        console.error("Error fetching all quotas:", allQuotasError);
+        console.log("Falling back to specific quotas...");
+      }
       
+      // Different Delta models use different approaches
       if (deviceType.includes("DELTA PRO ULTRA")) {
-        prefix = "hs_yj751_";
+        // For Delta Pro Ultra, we need to use the specific format from DeltaProUltra.md
+        console.log("Using Delta Pro Ultra specific format");
+        
+        // Key quotas for Delta Pro Ultra
+        const quotas = [
+          "hs_yj751_pd_appshow_addr.soc",
+          "hs_yj751_pd_appshow_addr.wattsOutSum",
+          "hs_yj751_pd_appshow_addr.wattsInSum",
+          "hs_yj751_pd_appshow_addr.remainTime",
+          "hs_yj751_pd_appshow_addr.sysErrCode",
+          "hs_yj751_pd_appshow_addr.showFlag", // Contains AC and DC status
+          "hs_yj751_pd_app_set_info_addr.acXboost",
+          "hs_yj751_pd_app_set_info_addr.acOutFreq",
+          "hs_yj751_pd_app_set_info_addr.chgMaxSoc",
+          "hs_yj751_pd_app_set_info_addr.dsgMinSoc",
+          "hs_yj751_pd_app_set_info_addr.acStandbyMins",
+          "hs_yj751_pd_app_set_info_addr.dcStandbyMins",
+          "hs_yj751_pd_app_set_info_addr.powerStandbyMins",
+          "hs_yj751_pd_app_set_info_addr.screenStandbySec"
+        ];
+        
+        const response = await this.getDeviceQuotas(serialNumber, quotas);
+        
+        console.log("Delta Pro Ultra quotas response:", JSON.stringify(response, null, 2));
+        
+        if ('success' in response && !response.success) {
+          return response;
+        }
+        
+        // Process the response to extract AC and DC status from showFlag
+        if (response && typeof response === 'object') {
+          const processedData: Record<string, any> = { ...response };
+          
+          // Extract AC and DC status from showFlag if available
+          if (processedData["hs_yj751_pd_appshow_addr.showFlag"]) {
+            const showFlag = Number(processedData["hs_yj751_pd_appshow_addr.showFlag"]);
+            const binaryFlag = showFlag.toString(2).padStart(16, '0');
+            
+            // According to DeltaProUltra.md, AC status is the 3rd bit from right
+            processedData.acOutState = parseInt(binaryFlag.charAt(binaryFlag.length - 3), 10);
+            
+            // DC status is the 6th bit from right
+            processedData.dcOutState = parseInt(binaryFlag.charAt(binaryFlag.length - 6), 10);
+          }
+          
+          return processedData;
+        }
+        
+        return response;
       } else if (deviceType.includes("DELTA PRO 3")) {
-        prefix = "9_1.";
-      } else if (deviceType.includes("DELTA 2 MAX")) {
-        prefix = "";
+        // For Delta Pro 3, we need to use the specific format with prefix 9_1
+        console.log("Using Delta Pro 3 specific format");
+        
+        // Key quotas for Delta Pro 3
+        const quotas = [
+          "9_1.soc",
+          "9_1.remainTime",
+          "9_1.wattsOutSum",
+          "9_1.wattsInSum",
+          "9_1.errCode",
+          "9_1.warnCode",
+          "9_1.cfgAcEnabled",
+          "9_1.cfgDcEnabled",
+          "9_1.chgPowerAC",
+          "9_1.chgPowerDC",
+          "9_1.acFreq",
+          "9_1.acVolt",
+          "9_1.acWatts",
+          "9_1.invTemp",
+          "9_1.batVolt",
+          "9_1.batCur",
+          "9_1.batTemp"
+        ];
+        
+        const response = await this.getDeviceQuotas(serialNumber, quotas);
+        
+        console.log("Delta Pro 3 quotas response:", JSON.stringify(response, null, 2));
+        
+        if ('success' in response && !response.success) {
+          return response;
+        }
+        
+        // Process the response to remove the "9_1." prefix from the keys
+        if (response && typeof response === 'object') {
+          const processedData: Record<string, any> = {};
+          
+          Object.entries(response).forEach(([key, value]) => {
+            // Remove the prefix from the key
+            const cleanKey = key.replace(/^9_1\./, '');
+            
+            // Convert string values to appropriate types
+            if (typeof value === 'string') {
+              // Try to convert to number if possible
+              const numValue = Number(value);
+              processedData[cleanKey] = isNaN(numValue) ? value : numValue;
+            } else {
+              processedData[cleanKey] = value;
+            }
+          });
+          
+          // Map cfgAcEnabled to acOutState for consistency
+          if ('cfgAcEnabled' in processedData) {
+            processedData.acOutState = processedData.cfgAcEnabled;
+          }
+          
+          return processedData;
+        }
+        
+        return response;
+      } else if (deviceType.includes("DELTA 2 MAX") || deviceType.includes("DELTA 2") || deviceType.includes("DELTA MAX")) {
+        // For Delta 2 Max and similar models, use the format from DeltaPro.md
+        console.log("Using Delta 2/Max specific format");
+        
+        // According to DeltaPro.md, we need to use specific quotas
+        const quotas = [
+          "bmsMaster.soc",
+          "pd.remainTime",
+          "pd.wattsOutSum",
+          "pd.wattsInSum",
+          "inv.cfgAcEnabled",
+          "pd.dcOutState",
+          "pd.chgPowerAC",
+          "pd.chgPowerDC",
+          "inv.acFreq",
+          "inv.acVolt",
+          "inv.acWatts",
+          "inv.outTemp",
+          "bmsMaster.vol",
+          "bmsMaster.amp",
+          "bmsMaster.temp",
+          "bmsMaster.errCode",
+          "inv.errCode",
+          "mppt.faultCode"
+        ];
+        
+        const response = await this.getDeviceQuotas(serialNumber, quotas);
+        
+        console.log("Delta 2/Max quotas response:", JSON.stringify(response, null, 2));
+        
+        if ('success' in response && !response.success) {
+          return response;
+        }
+        
+        // Process the response to map to a consistent format
+        if (response && typeof response === 'object') {
+          const processedData: Record<string, any> = { ...response };
+          
+          // Map bmsMaster.soc to soc for consistency
+          if (processedData["bmsMaster.soc"]) {
+            processedData.soc = Number(processedData["bmsMaster.soc"]);
+          }
+          
+          // Map inv.cfgAcEnabled to acOutState for consistency
+          if (processedData["inv.cfgAcEnabled"]) {
+            processedData.acOutState = Number(processedData["inv.cfgAcEnabled"]);
+          }
+          
+          // Convert string values to appropriate types
+          Object.entries(processedData).forEach(([key, value]) => {
+            if (typeof value === 'string') {
+              // Try to convert to number if possible
+              const numValue = Number(value);
+              processedData[key] = isNaN(numValue) ? value : numValue;
+            }
+          });
+          
+          return processedData;
+        }
+        
+        return response;
       } else {
-        // Default for most Delta models
-        prefix = "";
-      }
-      
-      // Common quotas for all Delta devices
-      const commonQuotas = [
-        "soc",
-        "remainTime",
-        "wattsOutSum",
-        "wattsInSum",
-        "chgPowerAC",
-        "chgPowerDC",
-        "typecCur",
-        "typecVolt",
-        "typecWatts",
-        "carCur",
-        "carVolt",
-        "carWatts",
-        "acFreq",
-        "acVolt",
-        "acWatts",
-        "invTemp",
-        "batVolt",
-        "batCur",
-        "batTemp",
-        "ambientTemp",
-        "sysVer",
-        "errCode",
-        "warnCode"
-      ];
-      
-      // Add prefixes to quotas if needed
-      const quotas = prefix ? commonQuotas.map(quota => `${prefix}${quota}`) : commonQuotas;
-      
-      // Add specific quotas for AC and DC output status
-      if (prefix === "hs_yj751_") {
-        quotas.push("hs_yj751_inv_cfg_addr.cfgAcEnabled");
-        quotas.push("hs_yj751_pd_cfg_addr.cfgDcEnabled");
-      } else if (prefix === "9_1.") {
-        quotas.push("9_1.cfgAcEnabled");
-        quotas.push("9_1.cfgDcEnabled");
-      } else {
-        quotas.push("inv.cfgAcEnabled");
-        quotas.push("pd.dcOutState");
-      }
-      
-      const response = await this.getDeviceQuotas(serialNumber, quotas);
-      
-      console.log("Delta quotas response:", JSON.stringify(response, null, 2));
-      
-      if ('success' in response && !response.success) {
+        // For other Delta models, use the general approach
+        console.log("Using general Delta format");
+        
+        // Common quotas for all Delta devices
+        const quotas = [
+          "bmsMaster.soc",
+          "pd.remainTime",
+          "pd.wattsOutSum",
+          "pd.wattsInSum",
+          "inv.cfgAcEnabled",
+          "pd.dcOutState",
+          "pd.chgPowerAC",
+          "pd.chgPowerDC",
+          "inv.acFreq",
+          "inv.acVolt",
+          "inv.acWatts",
+          "inv.outTemp",
+          "bmsMaster.vol",
+          "bmsMaster.amp",
+          "bmsMaster.temp",
+          "bmsMaster.errCode",
+          "inv.errCode",
+          "mppt.faultCode"
+        ];
+        
+        const response = await this.getDeviceQuotas(serialNumber, quotas);
+        
+        console.log("General Delta quotas response:", JSON.stringify(response, null, 2));
+        
+        if ('success' in response && !response.success) {
+          return response;
+        }
+        
+        // Process the response to map to a consistent format
+        if (response && typeof response === 'object') {
+          const processedData: Record<string, any> = { ...response };
+          
+          // Map bmsMaster.soc to soc for consistency
+          if (processedData["bmsMaster.soc"]) {
+            processedData.soc = Number(processedData["bmsMaster.soc"]);
+          }
+          
+          // Map inv.cfgAcEnabled to acOutState for consistency
+          if (processedData["inv.cfgAcEnabled"]) {
+            processedData.acOutState = Number(processedData["inv.cfgAcEnabled"]);
+          }
+          
+          // Convert string values to appropriate types
+          Object.entries(processedData).forEach(([key, value]) => {
+            if (typeof value === 'string') {
+              // Try to convert to number if possible
+              const numValue = Number(value);
+              processedData[key] = isNaN(numValue) ? value : numValue;
+            }
+          });
+          
+          return processedData;
+        }
+        
         return response;
       }
-      
-      // Process the response to remove prefixes from the keys if needed
-      if (prefix && response && typeof response === 'object') {
-        const processedData: Record<string, any> = {};
-        
-        Object.entries(response).forEach(([key, value]) => {
-          // Remove the prefix from the key
-          const cleanKey = key.replace(new RegExp(`^${prefix.replace('.', '\\.')}`, ''), '');
-          processedData[cleanKey] = value;
-        });
-        
-        return processedData;
-      }
-      
-      return response;
     } catch (error) {
       console.error("Error fetching Delta quotas:", error);
       return {

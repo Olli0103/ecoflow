@@ -272,7 +272,7 @@ ${Object.keys(results).length > 0
   );
 }
 
-export default function Command() {
+export default function Command(props: { launchContext?: { selectedDevice?: Device } }) {
   const [isLoading, setIsLoading] = useState(true);
   const [devices, setDevices] = useState<Device[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
@@ -331,12 +331,12 @@ export default function Command() {
       // Filter for Delta devices (all types except smart-plug, powerstream, etc.)
       const deltaDevices = savedDevices.filter((device) => {
         const type = device.type.toLowerCase();
-        const isDelta = type.includes("delta") || type.includes("river");
+        const isDeltaOrRiver = type.includes("delta") || type.includes("river");
         const isExcluded = type.includes("smart-plug") || type.includes("powerstream");
-        return isDelta && !isExcluded;
+        return isDeltaOrRiver && !isExcluded;
       });
       
-      console.log("Filtered Delta devices:", JSON.stringify(deltaDevices, null, 2));
+      console.log("Filtered Delta/River devices:", JSON.stringify(deltaDevices, null, 2));
 
       if (deltaDevices.length === 0) {
         console.log("No Delta devices found");
@@ -382,6 +382,17 @@ export default function Command() {
       console.log("Devices with status:", JSON.stringify(devicesWithStatus, null, 2));
 
       setDevices(devicesWithStatus);
+      
+      // Check if we have a device from the launch context
+      if (props.launchContext?.selectedDevice) {
+        console.log(`Using device from launch context: ${props.launchContext.selectedDevice.sn}`);
+        const contextDevice = devicesWithStatus.find(d => d.sn === props.launchContext?.selectedDevice?.sn);
+        if (contextDevice) {
+          setSelectedDevice(contextDevice);
+          fetchDeviceQuotas(contextDevice);
+          return;
+        }
+      }
       
       // Auto-select the first online device if available
       const onlineDevice = devicesWithStatus.find(device => device.online === 1);
@@ -528,8 +539,140 @@ export default function Command() {
     // Log all keys for debugging
     console.log("Available quota keys:", Object.keys(quotas));
     
+    // Handle the new response format (with bmsBattSoc, cmsBattSoc, etc.)
+    if (quotas.bmsBattSoc !== undefined || quotas.cmsBattSoc !== undefined || quotas.powInSumW !== undefined) {
+      console.log("Processing new format quotas");
+      
+      // Battery information
+      if (quotas.bmsBattSoc !== undefined) {
+        processedQuotas.soc = Number(quotas.bmsBattSoc);
+        console.log(`Found SOC in bmsBattSoc: ${processedQuotas.soc}`);
+      } else if (quotas.cmsBattSoc !== undefined) {
+        processedQuotas.soc = Number(quotas.cmsBattSoc);
+        console.log(`Found SOC in cmsBattSoc: ${processedQuotas.soc}`);
+      }
+      
+      // Power information
+      if (quotas.powInSumW !== undefined) {
+        processedQuotas.wattsInSum = Number(quotas.powInSumW);
+        console.log(`Found wattsInSum in powInSumW: ${processedQuotas.wattsInSum}`);
+      }
+      
+      if (quotas.powOutSumW !== undefined) {
+        processedQuotas.wattsOutSum = Number(quotas.powOutSumW);
+        console.log(`Found wattsOutSum in powOutSumW: ${processedQuotas.wattsOutSum}`);
+      }
+      
+      // Remaining time
+      if (quotas.bmsChgRemTime !== undefined) {
+        processedQuotas.remainTime = Number(quotas.bmsChgRemTime);
+        console.log(`Found remainTime in bmsChgRemTime: ${processedQuotas.remainTime}`);
+      } else if (quotas.bmsDsgRemTime !== undefined) {
+        processedQuotas.remainTime = -Number(quotas.bmsDsgRemTime); // Negative for discharge time
+        console.log(`Found remainTime in bmsDsgRemTime: ${processedQuotas.remainTime}`);
+      } else if (quotas.cmsChgRemTime !== undefined) {
+        processedQuotas.remainTime = Number(quotas.cmsChgRemTime);
+        console.log(`Found remainTime in cmsChgRemTime: ${processedQuotas.remainTime}`);
+      } else if (quotas.cmsDsgRemTime !== undefined) {
+        processedQuotas.remainTime = -Number(quotas.cmsDsgRemTime); // Negative for discharge time
+        console.log(`Found remainTime in cmsDsgRemTime: ${processedQuotas.remainTime}`);
+      }
+      
+      // AC and DC status
+      // For AC, check if any AC output power is present
+      const acOutputs = [
+        quotas.powGetAc,
+        quotas.powGetAcHvOut,
+        quotas.powGetAcLvOut,
+        quotas.powGetAcLvTt30Out
+      ];
+      
+      if (acOutputs.some(power => power !== undefined && Number(power) > 0)) {
+        processedQuotas.acOutState = 1;
+        console.log(`Determined acOutState from power outputs: ${processedQuotas.acOutState}`);
+      } else {
+        processedQuotas.acOutState = 0;
+        console.log(`Determined acOutState from power outputs: ${processedQuotas.acOutState}`);
+      }
+      
+      // For DC, check if any DC output power is present
+      const dcOutputs = [
+        quotas.powGet12v,
+        quotas.powGet24v,
+        quotas.powGetTypec1,
+        quotas.powGetTypec2,
+        quotas.powGetQcusb1,
+        quotas.powGetQcusb2
+      ];
+      
+      if (dcOutputs.some(power => power !== undefined && Number(power) > 0)) {
+        processedQuotas.dcOutState = 1;
+        console.log(`Determined dcOutState from power outputs: ${processedQuotas.dcOutState}`);
+      } else {
+        processedQuotas.dcOutState = 0;
+        console.log(`Determined dcOutState from power outputs: ${processedQuotas.dcOutState}`);
+      }
+      
+      // Error codes
+      if (quotas.bmsErrCode !== undefined) {
+        processedQuotas.errCode = Number(quotas.bmsErrCode);
+        console.log(`Found errCode in bmsErrCode: ${processedQuotas.errCode}`);
+      }
+      
+      return processedQuotas;
+    }
+    // For Delta Pro Ultra, we need to handle specific data structure
+    else if (device.type.includes("DELTA PRO ULTRA")) {
+      console.log("Processing Delta Pro Ultra specific quotas");
+      
+      // Extract SOC (battery level)
+      if (quotas["hs_yj751_pd_appshow_addr.soc"] !== undefined) {
+        processedQuotas.soc = Number(quotas["hs_yj751_pd_appshow_addr.soc"]);
+        console.log(`Found SOC in hs_yj751_pd_appshow_addr.soc: ${processedQuotas.soc}`);
+      }
+      
+      // Extract input power
+      if (quotas["hs_yj751_pd_appshow_addr.wattsInSum"] !== undefined) {
+        processedQuotas.wattsInSum = Number(quotas["hs_yj751_pd_appshow_addr.wattsInSum"]);
+        console.log(`Found wattsInSum in hs_yj751_pd_appshow_addr.wattsInSum: ${processedQuotas.wattsInSum}`);
+      }
+      
+      // Extract output power
+      if (quotas["hs_yj751_pd_appshow_addr.wattsOutSum"] !== undefined) {
+        processedQuotas.wattsOutSum = Number(quotas["hs_yj751_pd_appshow_addr.wattsOutSum"]);
+        console.log(`Found wattsOutSum in hs_yj751_pd_appshow_addr.wattsOutSum: ${processedQuotas.wattsOutSum}`);
+      }
+      
+      // Extract remaining time
+      if (quotas["hs_yj751_pd_appshow_addr.remainTime"] !== undefined) {
+        processedQuotas.remainTime = Number(quotas["hs_yj751_pd_appshow_addr.remainTime"]);
+        console.log(`Found remainTime in hs_yj751_pd_appshow_addr.remainTime: ${processedQuotas.remainTime}`);
+      }
+      
+      // Extract AC and DC status from showFlag
+      if (quotas["hs_yj751_pd_appshow_addr.showFlag"] !== undefined) {
+        const showFlag = Number(quotas["hs_yj751_pd_appshow_addr.showFlag"]);
+        const binaryFlag = showFlag.toString(2).padStart(16, '0');
+        
+        // According to DeltaProUltra.md, AC status is the 3rd bit from right
+        processedQuotas.acOutState = parseInt(binaryFlag.charAt(binaryFlag.length - 3), 10);
+        console.log(`Found acOutState in showFlag: ${processedQuotas.acOutState}`);
+        
+        // DC status is the 6th bit from right
+        processedQuotas.dcOutState = parseInt(binaryFlag.charAt(binaryFlag.length - 6), 10);
+        console.log(`Found dcOutState in showFlag: ${processedQuotas.dcOutState}`);
+      }
+      
+      // Extract error code
+      if (quotas["hs_yj751_pd_appshow_addr.sysErrCode"] !== undefined) {
+        processedQuotas.errCode = Number(quotas["hs_yj751_pd_appshow_addr.sysErrCode"]);
+        console.log(`Found errCode in hs_yj751_pd_appshow_addr.sysErrCode: ${processedQuotas.errCode}`);
+      }
+      
+      return processedQuotas;
+    }
     // For Delta Pro 3, we need to handle specific data structure
-    if (device.type.includes("DELTA PRO 3")) {
+    else if (device.type.includes("DELTA PRO 3")) {
       console.log("Processing Delta Pro 3 specific quotas");
       
       // Extract values from the fullQuotas object if available
@@ -1149,7 +1292,7 @@ export default function Command() {
                   {/* Battery Status */}
                   <List.Item
                     title="Battery"
-                    subtitle={`${deviceQuotas.soc !== undefined ? deviceQuotas.soc + '%' : 'Unknown'}`}
+                    subtitle={`${deviceQuotas.soc !== undefined ? Math.round(deviceQuotas.soc) + '%' : 'Unknown'}`}
                     icon={{ 
                       source: getBatteryIcon(deviceQuotas.soc), 
                       tintColor: getBatteryColor(deviceQuotas.soc) 
@@ -1287,7 +1430,7 @@ export default function Command() {
                     <List.Item
                       title="Battery Information"
                       icon={Icon.Battery}
-                      accessories={[{ text: deviceQuotas.soc !== undefined ? `${deviceQuotas.soc}%` : "Unknown" }]}
+                      accessories={[{ text: deviceQuotas.soc !== undefined ? `${Math.round(deviceQuotas.soc)}%` : "Unknown" }]}
                     />
                     <List.Item
                       title="Remaining Time"

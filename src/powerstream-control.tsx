@@ -1,6 +1,6 @@
 import { ActionPanel, Action, List, Icon, Color, showToast, Toast, Form, useNavigation } from "@raycast/api";
 import { useState, useEffect } from "react";
-import { ecoFlowAPI } from "./api";
+import { ecoFlowAPI, ApiErrorResponse } from "./api";
 
 interface Device {
   sn: string;
@@ -63,6 +63,11 @@ interface PowerStreamQuota {
   pv2WarningCode?: number; // PV2 warning code
   pv2Temp?: number; // PV2 temperature
   
+  // Additional fields that might be in the API response
+  pvToInvWatts?: number; // Solar to inverter power
+  invToPlugWatts?: number; // Inverter to grid power
+  invDemandWatts?: number; // Demand power
+  
   // System information
   ratedPower?: number; // Rated power
   installCountry?: number; // Country code
@@ -79,6 +84,11 @@ interface PowerStreamQuota {
   // Network information
   wifiRssi?: number; // Wi-Fi signal strength
   wifiErr?: number; // Wi-Fi error code
+}
+
+// Type guard to check if the response is an error
+function isApiErrorResponse(response: any): response is ApiErrorResponse {
+  return 'success' in response && !response.success && 'message' in response;
 }
 
 export default function Command() {
@@ -219,7 +229,14 @@ export function PowerStreamDetails({ device }: { device: Device }) {
       console.log("Fetching quotas for device:", device.sn);
       const deviceQuotas = await ecoFlowAPI.getPowerStreamQuotas(device.sn);
       console.log("API Response - PowerStream Quotas:", JSON.stringify(deviceQuotas, null, 2));
-      setQuotas(deviceQuotas);
+      
+      // Check if the response is an error response
+      if (isApiErrorResponse(deviceQuotas)) {
+        throw new Error(typeof deviceQuotas.message === 'string' ? deviceQuotas.message : "Failed to fetch PowerStream quotas");
+      }
+      
+      // Now we know it's a PowerStreamQuota
+      setQuotas(deviceQuotas as unknown as PowerStreamQuota);
     } catch (err) {
       console.error("Error fetching PowerStream quotas:", err);
       setError(err instanceof Error ? err.message : "Unknown error occurred");
@@ -1074,7 +1091,14 @@ function PowerStreamSettings({ device }: { device: Device }) {
     setIsLoading(true);
     try {
       const deviceQuotas = await ecoFlowAPI.getPowerStreamQuotas(device.sn);
-      setQuotas(deviceQuotas);
+      
+      // Check if the response is an error response
+      if (isApiErrorResponse(deviceQuotas)) {
+        throw new Error(typeof deviceQuotas.message === 'string' ? deviceQuotas.message : "Failed to fetch PowerStream quotas");
+      }
+      
+      // Now we know it's a PowerStreamQuota
+      setQuotas(deviceQuotas as unknown as PowerStreamQuota);
     } catch (err) {
       showToast({
         style: Toast.Style.Failure,

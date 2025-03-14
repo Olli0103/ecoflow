@@ -224,10 +224,30 @@ export function SmartPlugDetails({ device }: { device: Device }) {
       const newState = quotas.switchSta === true ? 0 : 1;
       console.log(`Toggling power state for device ${device.sn} from ${quotas.switchSta} to ${newState}`);
       
+      // Log the exact request we're about to make
+      console.log(`Using command code: WN511_SOCKET_SET_PLUG_SWITCH_MESSAGE`);
+      console.log(`Request parameters: { plugSwitch: ${newState} }`);
+      console.log(`API endpoint: /iot-open/sign/device/cmd`);
+      console.log(`Full expected URL: https://api-e.ecoflow.com/iot-open/sign/device/cmd`);
+      
+      // Create the request body for logging
+      const requestBody = {
+        sn: device.sn,
+        cmdCode: "WN511_SOCKET_SET_PLUG_SWITCH_MESSAGE",
+        params: {
+          plugSwitch: newState
+        }
+      };
+      
+      console.log(`Full request body:`, JSON.stringify(requestBody, null, 2));
+      
       // Use the exact format from the documentation
       const response = await ecoFlowAPI.setSmartPlugFunction(device.sn, "WN511_SOCKET_SET_PLUG_SWITCH_MESSAGE", {
         plugSwitch: newState
       });
+      
+      // Log the full response for debugging
+      console.log(`Toggle power state response:`, JSON.stringify(response, null, 2));
       
       // Check if the API call was successful
       if (!response.success) {
